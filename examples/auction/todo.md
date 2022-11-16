@@ -6,5 +6,6 @@
 - Item Information (`String`)
 - Current Bid (`Amount`)
 - Seller (`Address`)
+
 ---
 ## 
