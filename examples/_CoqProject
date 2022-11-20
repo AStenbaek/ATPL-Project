@@ -142,3 +142,7 @@ crowdfunding/CrowdfundingDataExt.v
 crowdfunding/CrowdfundingExt.v
 crowdfunding/CrowdfundingCameLIGO.v
 crowdfunding/CrowdfundingLiquidity.v
+
+-Q auction ConCert.Examples.Auction
+auction/AuctionData.v
+auction/Auction.v
