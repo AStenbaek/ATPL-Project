@@ -34,7 +34,7 @@ Section Auction.
         setup_seller : Address;
         setup_item : string;
         setup_duration : nat;
-        setup_minimum_raise : nat;
+        setup_minimum_raise : Amount;
       }.
   
   Record State :=
@@ -43,7 +43,7 @@ Section Auction.
         seller : Address;
         item : string;
         duration : nat;
-        minimum_raise : nat;
+        minimum_raise : Amount;
         highest_bidder : option Address;
         last_action: nat;
       }.
@@ -51,12 +51,19 @@ Section Auction.
   Definition Error : Type := nat.
   Definition default_error: Error := 1%nat.
 
-  Inductive Msg := .
+  Inductive Msg :=
+  | bid
+  | view
+  | view_highest_bid
+  | finalize.
 
   MetaCoq Run (make_setters State).
-
   
   Section Serialization.
+
+    Global Instance Msg_serializable : Serializable Msg :=
+      Derive Serializable Msg_rect<bid, view, view_highest_bid, finalize>.
+
     Global Instance Setup_serializable : Serializable Setup :=
       Derive Serializable Setup_rect<setup>.
     
@@ -67,3 +74,34 @@ Section Auction.
       Derive Serializable State_rect<build_state>.
   
   End Serialization.
+
+  (** 
+   *  Receives:
+   *  - #[receive(contract = "auction", name = "bid", payable, mutable, error = "BidError")]
+   * - #[receive(contract = "auction", name = "view", return_value = "State")]
+   * - #[receive(contract = "auction", name = "viewHighestBid", return_value = "Amount")]
+   * - #[receive(contract = "auction", name = "finalize", mutable, error = "FinalizeError")]
+   * - 
+   *)
+  
+  Definition init
+    (chain : Chain)
+    (ctx : ContractCallContext)
+    (setup : Setup)
+    : result State Error :=
+    let seller := ctx_from ctx in
+    let item := setup_item setup in
+    let duration := setup_duration setup in
+    let minimum_raise := setup_minimum_raise setup in
+    (* TODO: add checks?*)
+    Ok (build_state
+          not_sold_yet  (* Item is not sold initially *)
+          seller        (* Seller is the creator of the auction *)
+          item          (* Item to be sold, represented as a string *)
+          duration      (* The number of time slots, auction is running *)
+          minimum_raise (* Minimum riase to accept and over bid *)
+          None          (* Initial highest bidder *)
+          (current_slot chain) (* Slot of contract initialization *)
+      ).
+          
+  
