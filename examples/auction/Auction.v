@@ -44,6 +44,7 @@ Section Auction.
         item : string;
         duration : nat;
         minimum_raise : Amount;
+        current_price : Amount;
         highest_bidder : option Address;
         last_action: nat;
       }.
@@ -74,7 +75,7 @@ Section Auction.
       Derive Serializable State_rect<build_state>.
   
   End Serialization.
-
+  
   (** 
    *  Receives:
    *  - #[receive(contract = "auction", name = "bid", payable, mutable, error = "BidError")]
@@ -83,7 +84,8 @@ Section Auction.
    * - #[receive(contract = "auction", name = "finalize", mutable, error = "FinalizeError")]
    * - 
    *)
-  
+
+  Local Open Scope Z.
   Definition init
     (chain : Chain)
     (ctx : ContractCallContext)
@@ -100,8 +102,36 @@ Section Auction.
           item          (* Item to be sold, represented as a string *)
           duration      (* The number of time slots, auction is running *)
           minimum_raise (* Minimum riase to accept and over bid *)
+          0             (* Initial price of item is 0 *)
           None          (* Initial highest bidder *)
           (current_slot chain) (* Slot of contract initialization *)
       ).
-          
   
+  (* TODO: Do we need next_state? *)
+  Definition receive
+    (chain : Chain)
+    (ctx : ContractCallContext)
+    (state : State)
+    (msg : option Msg)
+    : result (State * list ActionBody) Error :=
+    match msg with
+    | Some bid =>
+        let price := current_price state in
+        let min_raise := minimum_raise state in
+        let bid_amount := ctx_amount ctx in
+        (* Ensure new bid raises by at least the minimum raise amount. *)
+        do if bid_amount <? price + min_raise
+           then Err default_error
+           else Ok tt;
+        (* TODO: Update new highest bidder and return money! *)
+        Ok (state, [])
+    | Some view => Ok (state, [])
+    | Some view_highest_bid => Ok (state, [])
+    | Some finalize => Ok (state, [])
+    | None => Err default_error
+    end.
+
+  Definition contract : Contract Setup Msg State Error :=
+    build_contract init receive.
+
+End Auction.
