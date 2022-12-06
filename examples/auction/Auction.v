@@ -81,7 +81,7 @@ Section Auction.
   
   (** 
    *  Receives:
-   *  - #[receive(contract = "auction", name = "bid", payable, mutable, error = "BidError")]
+   * - #[receive(contract = "auction", name = "bid", payable, mutable, error = "BidError")]
    * - #[receive(contract = "auction", name = "view", return_value = "State")]
    * - #[receive(contract = "auction", name = "viewHighestBid", return_value = "Amount")]
    * - #[receive(contract = "auction", name = "finalize", mutable, error = "FinalizeError")]
@@ -99,6 +99,9 @@ Section Auction.
     let duration := setup_duration setup in
     let minimum_raise := setup_minimum_raise setup in
     (* TODO: add checks?*)
+    do if (ctx_from ctx =? ctx_contract_address ctx)%address
+       then Err default_error
+       else Ok tt;
     Ok (build_state
           not_sold_yet  (* Item is not sold initially *)
           seller        (* Seller is the creator of the auction *)
@@ -130,7 +133,8 @@ Section Auction.
         let dur := duration state in
         let bidder := ctx_from ctx in
         (* Ensure bidder is not a contract *)
-        do if address_is_contract bidder
+        (*do if address_is_contract bidder*)
+        do if (ctx_contract_address ctx =? bidder)%address
            then Err default_error
            else Ok tt;
         (* Ensure auction has not ended *)
@@ -187,91 +191,86 @@ End Auction.
 Section Theories.
   Context `{Base : ChainBase}.
   Open Scope Z.
-  Definition bidder ctx new_state :=
-    let caddr := ctx_contract_address ctx in
-    match highest_bidder new_state with
-    | Some addr => (caddr =? addr)%address = false
-    | None => False
-    end.
-  (*
-  Lemma try_bidder : forall prev_state new_state chain ctx new_acts,
-      (address_is_contract (ctx_contract_address ctx) = true) -> 
-      receive chain ctx prev_state (Some bid) = Ok (new_state, new_acts) ->
-      bidder ctx new_state.
-  Proof.
-    intros.
-    unfold bidder.
-    destruct new_state; cbn.
-    destruct highest_bidder0 eqn:Hb.
-    - cbn in *.
-      remember (address_is_contract (ctx_from ctx)).
-      destruct b; try congruence.
-      cbn in *
-      do 2 (cbn in *; destruct_match in H; try congruence).
-      destruct ctx; cbn in *; vm_compute in H; try congruence.
-      inversion H.
-      rewrite <- H7.
-      subst.
-      inversion_clear H.
-    - do 5 (cbn in *; destruct_match in H; try congruence);
-      destruct ctx; cbn in *;
-      vm_compute in H;
-      try congruence. *)
-  
+
+  Ltac just_do_it arg :=
+    cbn in *; destruct_match in arg; try congruence.
+
   Lemma no_self_calls bstate caddr:
     reachable bstate ->
     env_contracts bstate caddr = Some (Auction.contract : WeakContract) ->
-    Forall (fun abody => match abody with
-                      | act_transfer to _ => (to =? caddr)%address = false
-                      | _ => False
-                      end) (outgoing_acts bstate caddr).
-  Proof.
-(*    intros.
-    eapply deployed_contract_state_typed in H0 as H'; auto.
-    destruct H' as [cstate H'].
-    generalize dependent H0.
-    generalize dependent H.*)
-    contract_induction; intros; cbn in *; auto.
-    - now inversion IH.
-    - apply Forall_app. split; last apply IH.
-      clear IH.
-      unfold receive in receive_some.
-      destruct_match in receive_some; try inversion receive_some.
-      cbn in *; destruct_match in receive_some; try congruence.
-      + remember (address_is_contract (ctx_from ctx)).
-        destruct b; try congruence.
-        do 4 (destruct_match in receive_some; cbn in *; try congruence).
-        inversion_clear H0.
-        * destruct new_state.
-    - apply IH.
-    - split.
-      + 
-
-      apply Forall_nil.
-    - inversion IH.
-      apply H2.
-    - apply Forall_app.
-      split; try apply IH.
-      unfold receive in receive_some.
-      destruct_match as [[]|] in receive_some.
-      + destruct prev_state.
-        do 4 (destruct_match in receive_some; cbn in *; try congruence).
-        destruct_match in receive_some; cbn in *.
-       
-        * inversion_clear receive_some.
-          constructor; auto.
-          eapply address_eq_ne; auto.
-          intro; subst.
-          
-          admit. (* Highest bidder should not be able to be a contract *)
-        * now inversion receive_some.
-      + inversion receive_some; auto.
-      + inversion receive_some; auto.
-      + do 3 (destruct_match in receive_some; cbn in *; try congruence).
-        inversion_clear receive_some.
-        constructor; try constructor.
-        admit. (* Similar to previous admit. *)
-      + congruence.
-    - apply Forall_app; split; [| now inversion IH].
-   *) 
-                
+    exists cstate,
+      contract_state bstate caddr = Some cstate /\
+        (highest_bidder cstate <> Some caddr /\
+         seller cstate <> caddr /\
+         Forall (fun abody => match abody with
+                           | act_transfer to _ => (to =? caddr)%address = false
+                           | _ => False
+                           end) (outgoing_acts bstate caddr)).
+  Proof with auto.
+    contract_induction; intros; (try apply IH in H as H'); cbn in *; auto.
+    - split; try split.
+      + unfold init in init_some.
+        destruct_match in init_some; auto.
+        now inversion init_some.
+      + unfold init in init_some.
+        destruct (address_eqb_spec (ctx_from ctx) (ctx_contract_address ctx));
+          [| inversion init_some]; auto.
+      + auto.
+    - destruct IH as [IH1 [IH2 IH3]]; split; auto.
+      inversion IH3; auto.
+    - destruct IH as [IH1 [IH2 IH3]]; split;
+      try apply Forall_app; try split.
+      + unfold receive in receive_some.
+        do 2 just_do_it receive_some...
+        * do 5 just_do_it receive_some.
+          ** inversion receive_some; cbn in *.
+             intro.
+             inversion H; congruence.
+          ** inversion receive_some; cbn in *.
+             congruence.
+        * do 3 just_do_it receive_some.
+          inversion receive_some; cbn in *...
+      + unfold receive in receive_some; cbn in *.
+        do 2 just_do_it receive_some...
+        * do 5 just_do_it receive_some; inversion receive_some...
+        * do 3 just_do_it receive_some; inversion receive_some...
+      + apply Forall_app; split...
+        unfold receive in receive_some.
+        do 2 just_do_it receive_some; try (inversion receive_some; auto; fail).
+        * do 5 just_do_it receive_some; inversion receive_some...
+          apply Forall_cons...
+          apply address_eq_ne.
+          intro.
+          congruence.
+        * do 3 just_do_it receive_some; inversion receive_some.
+          apply Forall_cons...
+          apply address_eq_ne; intro; congruence.
+    - destruct IH as [IH1 [IH2 IH3]];
+        split; try split.
+      + inversion IH3; 
+        destruct head; subst...
+        destruct action_facts as [A1 [A2 A3]]; subst...
+      + inversion IH3; destruct head...
+        destruct action_facts as [A1 [A2 A3]]; subst...
+      + inversion IH3; apply Forall_app; split...
+        unfold receive in receive_some; cbn in *.
+        do 2 just_do_it receive_some...
+        * do 5 just_do_it receive_some; inversion receive_some...
+          apply Forall_cons...
+          apply address_eq_ne; intro.
+          rewrite H3 in IH1...
+        * inversion receive_some...
+        * inversion receive_some...
+        * do 3 just_do_it receive_some; inversion receive_some...
+          apply Forall_cons...
+          apply address_eq_ne; intro.
+          rewrite H3 in IH2...
+    - destruct IH as [IH1 [IH2 IH3]]; repeat split...
+      now rewrite <- perm.
+    - instantiate (DeployFacts := fun _ _ => True).
+      instantiate (CallFacts := fun _ _ _ _ _ => True).
+      instantiate (AddBlockFacts := fun _ _ _ _ _ _ => True).
+      unset_all; subst; cbn in *.
+      destruct_chain_step...
+      destruct_action_eval...
+  Qed.
