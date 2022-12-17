@@ -207,8 +207,9 @@ Section Theories.
                            | _ => False
                            end) (outgoing_acts bstate caddr)).
   Proof with auto.
-    contract_induction; intros; (try apply IH in H as H'); cbn in *; auto.
-    - split; try split.
+    contract_induction;
+      intros; (try apply IH in H as H'); cbn in *; auto.
+    - repeat split.
       + unfold init in init_some.
         destruct_match in init_some; auto.
         now inversion init_some.
@@ -274,3 +275,31 @@ Section Theories.
       destruct_chain_step...
       destruct_action_eval...
   Qed.
+
+(* Naïve one-step version first
+   Maybe look into something like:
+   "if the auction is finished in blockstate a and some blockstate b
+    is reachable from a. Then the auction is still finished in state b"
+*) 
+  Lemma sold_state_is_final_one_step :
+    forall (chain : Chain)
+      (ctx : ContractCallContext)
+      (state : Auction.State)
+      (msg : option Auction.Msg)
+      (winner : Address)
+      (state' : Auction.State)
+      (alist : list ActionBody),
+      auction_state state = sold winner ->
+      receive chain ctx state msg = Ok (state', alist) ->
+      auction_state state' = sold winner.
+  Proof.
+    intros;
+      destruct state;
+      unfold receive in H0;
+      vm_compute in H; subst;
+      repeat just_do_it H0;
+      now inversion H0.
+  Qed.
+
+  
+End Theories.
