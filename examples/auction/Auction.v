@@ -112,8 +112,6 @@ Section Auction.
           None          (* Initial highest bidder *)
           (current_slot chain) (* Slot of contract initialization *)
       ).
-
-  Print act_transfer.
   
   (* TODO: Do we need next_state? *)
   Definition receive
@@ -133,7 +131,7 @@ Section Auction.
         let dur := duration state in
         let bidder := ctx_from ctx in
         (* Ensure bidder is not a contract *)
-        (*do if address_is_contract bidder*)
+        (* do if address_is_contract bidder*)
         do if (ctx_contract_address ctx =? bidder)%address
            then Err default_error
            else Ok tt;
@@ -188,6 +186,8 @@ Section Auction.
     build_contract init receive.
 
 End Auction.
+
+
 Section Theories.
   Context `{Base : ChainBase}.
   Open Scope Z.
@@ -211,7 +211,7 @@ Section Theories.
       intros; (try apply IH in H as H'); cbn in *; auto.
     - repeat split.
       + unfold init in init_some.
-        destruct_match in init_some; auto.
+        destruct_match in init_some...
         now inversion init_some.
       + unfold init in init_some.
         destruct (address_eqb_spec (ctx_from ctx) (ctx_contract_address ctx));
@@ -301,5 +301,9 @@ Section Theories.
       now inversion H0.
   Qed.
 
+  Print ContractCallInfo.
+  
+
+  
   
 End Theories.
