@@ -20,23 +20,12 @@ Section Auction.
   | not_sold_yet : AuctionState
   | sold : Address -> AuctionState.
 
-  (** 
-      /// Type of the parameter to the `init` function
-      #[derive(Serialize, SchemaType)]
-      struct InitParameter {
-      /// The item to be sold
-      item:          String,
-      /// Time when auction ends using the RFC 3339 format (https://tools.ietf.org/html/rfc3339)
-      end:           Timestamp,
-      /// The minimum accepted raise to over bid the current bidder in Euro cent.
-      minimum_raise: u64,
-      }
-   *)
   Record Setup :=
     setup {
         setup_seller : Address;
         setup_item : string;
         setup_duration : nat;
+        setup_start_price : Amount;
         setup_minimum_raise : Amount;
       }.
   
@@ -78,15 +67,6 @@ Section Auction.
       Derive Serializable State_rect<build_state>.
   
   End Serialization.
-  
-  (** 
-   *  Receives:
-   * - #[receive(contract = "auction", name = "bid", payable, mutable, error = "BidError")]
-   * - #[receive(contract = "auction", name = "view", return_value = "State")]
-   * - #[receive(contract = "auction", name = "viewHighestBid", return_value = "Amount")]
-   * - #[receive(contract = "auction", name = "finalize", mutable, error = "FinalizeError")]
-   * - 
-   *)
 
   Local Open Scope Z.
   Definition init
@@ -96,9 +76,11 @@ Section Auction.
     : result State Error :=
     let seller := ctx_from ctx in
     let item := setup_item setup in
+    let start_price := setup_start_price setup in
     let duration := setup_duration setup in
     let minimum_raise := setup_minimum_raise setup in
     (* TODO: add checks?*)
+    (* Feels like we shouldn't need this... *)
     do if (ctx_from ctx =? ctx_contract_address ctx)%address
        then Err default_error
        else Ok tt;
@@ -108,7 +90,7 @@ Section Auction.
           item          (* Item to be sold, represented as a string *)
           duration      (* The number of time slots, auction is running *)
           minimum_raise (* Minimum riase to accept and over bid *)
-          0             (* Initial price of item is 0 *)
+          start_price   (* Initial price *)
           None          (* Initial highest bidder *)
           (current_slot chain) (* Slot of contract initialization *)
       ).
@@ -123,6 +105,7 @@ Section Auction.
     match msg with
     (* Placing a bid. *)
     | Some bid =>
+        let sellr := seller state in
         let price := current_price state in
         let min_raise := minimum_raise state in
         let bid_amount := ctx_amount ctx in
@@ -131,8 +114,11 @@ Section Auction.
         let dur := duration state in
         let bidder := ctx_from ctx in
         (* Ensure bidder is not a contract *)
-        (* do if address_is_contract bidder*)
-        do if (ctx_contract_address ctx =? bidder)%address
+        do if address_is_contract bidder
+           then Err default_error
+           else Ok tt;
+        (* Ensure the seller does not bid *)
+        do if (bidder =? sellr)%address
            then Err default_error
            else Ok tt;
         (* Ensure auction has not ended *)
@@ -156,7 +142,7 @@ Section Auction.
           end in
         (* Update the state with the new highest bid and bidder *)
         let new_state :=
-          state<| current_price := bid_amount |>
+          state<| current_price  := bid_amount  |>
                <| highest_bidder := Some bidder |>
         in
         Ok (new_state, action_list)
@@ -223,7 +209,7 @@ Section Theories.
       try apply Forall_app; try split.
       + unfold receive in receive_some.
         do 2 just_do_it receive_some...
-        * do 5 just_do_it receive_some.
+        * repeat just_do_it receive_some.
           ** inversion receive_some; cbn in *.
              intro.
              inversion H; congruence.
@@ -233,19 +219,18 @@ Section Theories.
           inversion receive_some; cbn in *...
       + unfold receive in receive_some; cbn in *.
         do 2 just_do_it receive_some...
-        * do 5 just_do_it receive_some; inversion receive_some...
-        * do 3 just_do_it receive_some; inversion receive_some...
+        * repeat just_do_it receive_some; inversion receive_some...
+        * repeat just_do_it receive_some; inversion receive_some...
       + apply Forall_app; split...
         unfold receive in receive_some.
-        do 2 just_do_it receive_some; try (inversion receive_some; auto; fail).
-        * do 5 just_do_it receive_some; inversion receive_some...
-          apply Forall_cons...
-          apply address_eq_ne.
-          intro.
-          congruence.
-        * do 3 just_do_it receive_some; inversion receive_some.
-          apply Forall_cons...
-          apply address_eq_ne; intro; congruence.
+        do 2 just_do_it receive_some; try (inversion receive_some; auto; fail);
+        repeat just_do_it receive_some; inversion receive_some;
+        auto;
+        apply Forall_cons;
+        auto;
+        apply address_eq_ne;
+        intro;
+        congruence.
     - destruct IH as [IH1 [IH2 IH3]];
         split; try split.
       + inversion IH3; 
@@ -256,13 +241,13 @@ Section Theories.
       + inversion IH3; apply Forall_app; split...
         unfold receive in receive_some; cbn in *.
         do 2 just_do_it receive_some...
-        * do 5 just_do_it receive_some; inversion receive_some...
+        * repeat just_do_it receive_some; inversion receive_some...
           apply Forall_cons...
           apply address_eq_ne; intro.
           rewrite H3 in IH1...
         * inversion receive_some...
         * inversion receive_some...
-        * do 3 just_do_it receive_some; inversion receive_some...
+        * repeat just_do_it receive_some; inversion receive_some...
           apply Forall_cons...
           apply address_eq_ne; intro.
           rewrite H3 in IH2...
