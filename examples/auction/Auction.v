@@ -203,8 +203,8 @@ Section Theories.
         destruct (address_eqb_spec (ctx_from ctx) (ctx_contract_address ctx));
           [| inversion init_some]; auto.
       + auto.
-    - destruct IH as [IH1 [IH2 IH3]]; split; auto.
-      inversion IH3; auto.
+    - destruct IH as [IH1 [IH2 IH3]]; split;
+      inversion IH3; auto...
     - destruct IH as [IH1 [IH2 IH3]]; split;
       try apply Forall_app; try split.
       + unfold receive in receive_some.
@@ -218,9 +218,8 @@ Section Theories.
         * do 3 just_do_it receive_some.
           inversion receive_some; cbn in *...
       + unfold receive in receive_some; cbn in *.
-        do 2 just_do_it receive_some...
-        * repeat just_do_it receive_some; inversion receive_some...
-        * repeat just_do_it receive_some; inversion receive_some...
+        do 2 just_do_it receive_some;
+        auto; repeat just_do_it receive_some; inversion receive_some...
       + apply Forall_app; split...
         unfold receive in receive_some.
         do 2 just_do_it receive_some; try (inversion receive_some; auto; fail);
@@ -261,6 +260,8 @@ Section Theories.
       destruct_action_eval...
   Qed.
 
+ 
+  
 (* Naïve one-step version first
    Maybe look into something like:
    "if the auction is finished in blockstate a and some blockstate b
@@ -286,9 +287,14 @@ Section Theories.
       now inversion H0.
   Qed.
 
+  
+  Lemma sold_state_is_final bstate caddr:
+    reachable bstate ->
+    env_contracts bstate caddr = Some (Auction.contract : WeakContract) ->
+    exists cstate,
+      
+    intros.
+    Print contract_induction.
   Print ContractCallInfo.
-  
-
-  
   
 End Theories.
