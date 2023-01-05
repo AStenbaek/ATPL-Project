@@ -32,13 +32,13 @@ Section Auction.
   Record State :=
     build_state {
         auction_state : AuctionState;
-        seller : Address;
-        item : string;
-        duration : nat;
-        minimum_raise : Amount;
-        current_price : Amount;
-        highest_bidder : option Address;
-        creation_slot : nat;
+        auction_seller : Address;
+        auction_item : string;
+        auction_duration : nat;
+        auction_minimum_raise : Amount;
+        auction_current_price : Amount;
+        auction_highest_bidder : option Address;
+        auction_creation_slot : nat;
       }.
 
   Definition Error : Type := nat.
@@ -105,20 +105,20 @@ Section Auction.
     match msg with
     (* Placing a bid. *)
     | Some bid =>
-        let sellr := seller state in
-        let price := current_price state in
-        let min_raise := minimum_raise state in
+        let seller := auction_seller state in
+        let price := auction_current_price state in
+        let min_raise := auction_minimum_raise state in
         let bid_amount := ctx_amount ctx in
         let curr_slot := current_slot chain in
-        let start_slot := creation_slot state in
-        let dur := duration state in
+        let start_slot := auction_creation_slot state in
+        let dur := auction_duration state in
         let bidder := ctx_from ctx in
         (* Ensure bidder is not a contract *)
         do if address_is_contract bidder
            then Err default_error
            else Ok tt;
         (* Ensure the seller does not bid *)
-        do if (bidder =? sellr)%address
+        do if (bidder =? seller)%address
            then Err default_error
            else Ok tt;
         (* Ensure auction has not ended *)
@@ -136,22 +136,22 @@ Section Auction.
            else Ok tt;
         (* If there was a previous highest bidder, return the bid. *)
         let action_list :=
-          match highest_bidder state with
+          match auction_highest_bidder state with
           | None => []
           | Some addr => [act_transfer addr price]
           end in
         (* Update the state with the new highest bid and bidder *)
         let new_state :=
-          state<| current_price  := bid_amount  |>
-               <| highest_bidder := Some bidder |>
+          state<| auction_current_price  := bid_amount  |>
+               <| auction_highest_bidder := Some bidder |>
         in
         Ok (new_state, action_list)
     | Some view => Ok (state, [])
     | Some view_highest_bid => Ok (state, [])
     | Some finalize =>
         let curr_slot := current_slot chain in
-        let start_slot := creation_slot state in
-        let dur := duration state in
+        let start_slot := auction_creation_slot state in
+        let dur := auction_duration state in
         (* Ensure the auction has ended *)
         do if (curr_slot <? start_slot + dur)%nat
            then Ok tt
@@ -162,9 +162,9 @@ Section Auction.
            | _ => Err default_error
            end;
         (* TODO: How to deal with unsold item? *)
-        do bidder <- result_of_option (highest_bidder state) default_error;
+        do bidder <- result_of_option (auction_highest_bidder state) default_error;
         let new_state := state<| auction_state := sold bidder |> in
-        Ok (new_state, [act_transfer (seller state) (current_price state)])
+        Ok (new_state, [act_transfer (auction_seller state) (auction_current_price state)])
     | None => Err default_error
     end.
   
@@ -186,8 +186,8 @@ Section Theories.
     env_contracts bstate caddr = Some (Auction.contract : WeakContract) ->
     exists cstate,
       contract_state bstate caddr = Some cstate /\
-        (highest_bidder cstate <> Some caddr /\
-         seller cstate <> caddr /\
+        (auction_highest_bidder cstate <> Some caddr /\
+         auction_seller cstate <> caddr /\
          Forall (fun abody => match abody with
                            | act_transfer to _ => (to =? caddr)%address = false
                            | _ => False
@@ -258,9 +258,7 @@ Section Theories.
       unset_all; subst; cbn in *.
       destruct_chain_step...
       destruct_action_eval...
-  Qed.
-
- 
+  Qed. 
   
 (* Naïve one-step version first
    Maybe look into something like:
@@ -287,14 +285,53 @@ Section Theories.
       now inversion H0.
   Qed.
 
-  
-  Lemma sold_state_is_final bstate caddr:
+  (* Seller is immutable *)
+  Lemma seller_is_immutable :
+    forall (chain : Chain)
+      (ctx : ContractCallContext)
+      (state state' : Auction.State)
+      (msg : option Auction.Msg)
+      (alist : list ActionBody),
+      receive chain ctx state msg = Ok (state', alist) ->
+      auction_seller state = auction_seller state'.
+  Proof.
+    intros;
+      destruct state;
+      unfold receive in H;
+      vm_compute in H; subst;
+      repeat just_do_it H;
+      now inversion H.
+  Qed.
+
+  (* 
+   * In no reachable state is the seller the highest bidder.
+   *)
+  Lemma seller_cannot_bid_on_own_auction bstate caddr :
     reachable bstate ->
     env_contracts bstate caddr = Some (Auction.contract : WeakContract) ->
     exists cstate,
-      
-    intros.
-    Print contract_induction.
-  Print ContractCallInfo.
+      contract_state bstate caddr = Some cstate /\
+        auction_highest_bidder cstate <> Some (auction_seller cstate).
+  Proof with auto.
+    contract_induction; intros; cbn in *...
+    - destruct result;
+      repeat just_do_it init_some.
+    - unfold receive in receive_some;
+      destruct (address_eqb_spec (ctx_from ctx) (auction_seller prev_state));
+        repeat just_do_it receive_some;
+        vm_compute in receive_some; inversion receive_some; cbn in *; auto;
+        intro; apply n; vm_compute; inversion H...
+    - unfold receive in receive_some;
+      destruct (address_eqb_spec (ctx_from ctx) (auction_seller prev_state));
+        repeat just_do_it receive_some;
+        vm_compute in receive_some; inversion receive_some; cbn in *; auto;
+        intro; apply n; vm_compute; inversion H...
+    - instantiate (DeployFacts := fun _ _ => True).
+      instantiate (CallFacts := fun _ _ _ _ _ => True).
+      instantiate (AddBlockFacts := fun _ _ _ _ _ _ => True).
+      unset_all; subst; cbn in *.
+      destruct_chain_step...
+      destruct_action_eval...
+  Qed. 
   
 End Theories.
