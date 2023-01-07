@@ -7,9 +7,12 @@ From ConCert.Execution Require Import Monad.
 From ConCert.Execution Require Import ResultMonad.
 From ConCert.Execution Require Import Serializable.
 From ConCert.Execution Require Import ContractCommon.
+From ConCert.Execution Require Import InterContractCommunication.
 From ConCert.Utils Require Import RecordUpdate.
 From ConCert.Utils Require Import Automation.
 From ConCert.Utils Require Import Extras.
+
+
 
 Section Auction.
   Context `{Base : ChainBase}.
@@ -46,8 +49,8 @@ Section Auction.
 
   Inductive Msg :=
   | bid
-  | view
-  | view_highest_bid
+(*  | view
+  | view_highest_bid*)
   | finalize.
 
   MetaCoq Run (make_setters State).
@@ -55,7 +58,7 @@ Section Auction.
   Section Serialization.
 
     Global Instance Msg_serializable : Serializable Msg :=
-      Derive Serializable Msg_rect<bid, view, view_highest_bid, finalize>.
+      Derive Serializable Msg_rect<bid, (*view, view_highest_bid,*) finalize>.
 
     Global Instance Setup_serializable : Serializable Setup :=
       Derive Serializable Setup_rect<setup>.
@@ -92,10 +95,78 @@ Section Auction.
           minimum_raise (* Minimum riase to accept and over bid *)
           start_price   (* Initial price *)
           None          (* Initial highest bidder *)
-          (current_slot chain) (* Slot of contract initialization *)
+          chain.(current_slot) (* Slot of contract initialization *)
       ).
+
+  Definition place_bid
+    (chain : Chain)
+    (ctx : ContractCallContext)
+    (state : State)
+    : result (State * list ActionBody) Error :=
+    let seller := auction_seller state in
+    let price := auction_current_price state in
+    let min_raise := auction_minimum_raise state in
+    let bid_amount := ctx_amount ctx in
+    let curr_slot := current_slot chain in
+    let start_slot := auction_creation_slot state in
+    let dur := auction_duration state in
+    let bidder := ctx_from ctx in
+    (* Ensure bidder is not a contract *)
+    do if address_is_contract bidder
+       then Err default_error
+       else Ok tt;
+    (* Ensure the seller does not bid *)
+    do if (bidder =? seller)%address
+       then Err default_error
+       else Ok tt;
+    (* Ensure auction has not ended *)
+    do if (start_slot + dur <=? curr_slot)%nat
+       then Ok tt
+       else Err default_error;
+    (* Ensure auction is still active. *)
+    do match auction_state state with
+       | not_sold_yet => Ok tt
+       | _ => Err default_error
+       end;
+    (* Ensure new bid raises by at least the minimum raise amount. *)
+    do if bid_amount <? price + min_raise
+       then Err default_error
+       else Ok tt;
+    (* If there was a previous highest bidder, return the bid. *)
+    let action_list :=
+      match auction_highest_bidder state with
+      | None => []
+      | Some addr => [act_transfer addr price]
+      end in
+    (* Update the state with the new highest bid and bidder *)
+    let new_state :=
+      state<| auction_current_price  := bid_amount  |>
+           <| auction_highest_bidder := Some bidder |>
+    in
+    Ok (new_state, action_list).
+
+  Definition finalize_auction
+    (chain : Chain)
+    (ctx : ContractCallContext)
+    (state : State)
+    : result (State * list ActionBody) Error :=
+    let curr_slot := current_slot chain in
+    let start_slot := auction_creation_slot state in
+    let dur := auction_duration state in
+    (* Ensure the auction has ended *)
+    do if (curr_slot <? start_slot + dur)%nat
+       then Ok tt
+       else Err default_error;
+    (* Ensure the auction has not been finalized *)
+    do match auction_state state with
+       | not_sold_yet => Ok tt
+       | _ => Err default_error
+       end;
+    (* TODO: How to deal with unsold item? *)
+    do bidder <- result_of_option (auction_highest_bidder state) default_error;
+    let new_state := state<| auction_state := sold bidder |> in
+    Ok (new_state, [act_transfer (auction_seller state) (auction_current_price state)]).
   
-  (* TODO: Do we need next_state? *)
   Definition receive
     (chain : Chain)
     (ctx : ContractCallContext)
@@ -104,73 +175,16 @@ Section Auction.
     : result (State * list ActionBody) Error :=
     match msg with
     (* Placing a bid. *)
-    | Some bid =>
-        let seller := auction_seller state in
-        let price := auction_current_price state in
-        let min_raise := auction_minimum_raise state in
-        let bid_amount := ctx_amount ctx in
-        let curr_slot := current_slot chain in
-        let start_slot := auction_creation_slot state in
-        let dur := auction_duration state in
-        let bidder := ctx_from ctx in
-        (* Ensure bidder is not a contract *)
-        do if address_is_contract bidder
-           then Err default_error
-           else Ok tt;
-        (* Ensure the seller does not bid *)
-        do if (bidder =? seller)%address
-           then Err default_error
-           else Ok tt;
-        (* Ensure auction has not ended *)
-        do if (start_slot + dur <=? curr_slot)%nat
-           then Ok tt
-           else Err default_error;
-        (* Ensure auction is still active. *)
-        do match auction_state state with
-           | not_sold_yet => Ok tt
-           | _ => Err default_error
-           end;
-        (* Ensure new bid raises by at least the minimum raise amount. *)
-        do if bid_amount <? price + min_raise
-           then Err default_error
-           else Ok tt;
-        (* If there was a previous highest bidder, return the bid. *)
-        let action_list :=
-          match auction_highest_bidder state with
-          | None => []
-          | Some addr => [act_transfer addr price]
-          end in
-        (* Update the state with the new highest bid and bidder *)
-        let new_state :=
-          state<| auction_current_price  := bid_amount  |>
-               <| auction_highest_bidder := Some bidder |>
-        in
-        Ok (new_state, action_list)
-    | Some view => Ok (state, [])
-    | Some view_highest_bid => Ok (state, [])
-    | Some finalize =>
-        let curr_slot := current_slot chain in
-        let start_slot := auction_creation_slot state in
-        let dur := auction_duration state in
-        (* Ensure the auction has ended *)
-        do if (curr_slot <? start_slot + dur)%nat
-           then Ok tt
-           else Err default_error;
-        (* Ensure the auction has not been finalized *)
-        do match auction_state state with
-           | not_sold_yet => Ok tt
-           | _ => Err default_error
-           end;
-        (* TODO: How to deal with unsold item? *)
-        do bidder <- result_of_option (auction_highest_bidder state) default_error;
-        let new_state := state<| auction_state := sold bidder |> in
-        Ok (new_state, [act_transfer (auction_seller state) (auction_current_price state)])
+    | Some bid => place_bid chain ctx state
+    (* Finalizing Auction *)
+    | Some finalize => finalize_auction chain ctx state
+    (* Empty Message *)
     | None => Err default_error
     end.
   
   Definition contract : Contract Setup Msg State Error :=
     build_contract init receive.
-
+  
 End Auction.
 
 
@@ -180,7 +194,57 @@ Section Theories.
 
   Ltac just_do_it arg :=
     cbn in *; destruct_match in arg; try congruence.
-
+  
+  Ltac unfold_receive arg :=
+    unfold receive in arg;
+    unfold place_bid in arg;
+    unfold finalize_auction in arg.
+  
+  (** ** Bid correct *)
+  (* In no reachable state is the seller the highest bidder *)
+  Lemma seller_cannot_bid_on_own_auction bstate caddr :
+    reachable bstate ->
+    env_contracts bstate caddr = Some (Auction.contract : WeakContract) ->
+    exists cstate,
+      contract_state bstate caddr = Some cstate /\
+        auction_highest_bidder cstate <> Some (auction_seller cstate).
+  Proof with auto.
+    contract_induction; intros; cbn in *...
+    - destruct result;
+      repeat just_do_it init_some.
+    - unfold_receive receive_some;
+      destruct (address_eqb_spec (ctx_from ctx) (auction_seller prev_state));
+        repeat just_do_it receive_some;
+        vm_compute in receive_some; inversion receive_some; cbn in *; auto;
+        intro; apply n; vm_compute; inversion H...
+    - unfold_receive receive_some;
+      destruct (address_eqb_spec (ctx_from ctx) (auction_seller prev_state));
+        repeat just_do_it receive_some;
+        vm_compute in receive_some; inversion receive_some; cbn in *; auto;
+        intro; apply n; vm_compute; inversion H...
+    - instantiate (DeployFacts := fun _ _ => True).
+      instantiate (CallFacts := fun _ _ _ _ _ => True).
+      instantiate (AddBlockFacts := fun _ _ _ _ _ _ => True).
+      unset_all; subst; cbn in *.
+      destruct_chain_step...
+      destruct_action_eval...
+  Qed.
+  
+  (* Outbidding invokes a transfer to previous highest bidder *)
+  Lemma place_bid_refund :
+    forall (chain : Chain)
+      (ctx : ContractCallContext)
+      (state state' : State)
+      (addr addr' : Address)
+      (alist : list ActionBody),
+      state.(auction_highest_bidder) = Some addr ->
+      state'.(auction_highest_bidder) = Some addr' ->
+      receive chain ctx state (Some bid) = Ok (state', alist) ->
+      alist = [act_transfer addr state.(auction_current_price)].
+    Proof.
+      intros; unfold_receive H1; repeat just_do_it H1.
+    Qed.
+  
   Lemma no_self_calls bstate caddr:
     reachable bstate ->
     env_contracts bstate caddr = Some (Auction.contract : WeakContract) ->
@@ -244,8 +308,6 @@ Section Theories.
           apply Forall_cons...
           apply address_eq_ne; intro.
           rewrite H3 in IH1...
-        * inversion receive_some...
-        * inversion receive_some...
         * repeat just_do_it receive_some; inversion receive_some...
           apply Forall_cons...
           apply address_eq_ne; intro.
@@ -302,36 +364,6 @@ Section Theories.
       repeat just_do_it H;
       now inversion H.
   Qed.
-
-  (* 
-   * In no reachable state is the seller the highest bidder.
-   *)
-  Lemma seller_cannot_bid_on_own_auction bstate caddr :
-    reachable bstate ->
-    env_contracts bstate caddr = Some (Auction.contract : WeakContract) ->
-    exists cstate,
-      contract_state bstate caddr = Some cstate /\
-        auction_highest_bidder cstate <> Some (auction_seller cstate).
-  Proof with auto.
-    contract_induction; intros; cbn in *...
-    - destruct result;
-      repeat just_do_it init_some.
-    - unfold receive in receive_some;
-      destruct (address_eqb_spec (ctx_from ctx) (auction_seller prev_state));
-        repeat just_do_it receive_some;
-        vm_compute in receive_some; inversion receive_some; cbn in *; auto;
-        intro; apply n; vm_compute; inversion H...
-    - unfold receive in receive_some;
-      destruct (address_eqb_spec (ctx_from ctx) (auction_seller prev_state));
-        repeat just_do_it receive_some;
-        vm_compute in receive_some; inversion receive_some; cbn in *; auto;
-        intro; apply n; vm_compute; inversion H...
-    - instantiate (DeployFacts := fun _ _ => True).
-      instantiate (CallFacts := fun _ _ _ _ _ => True).
-      instantiate (AddBlockFacts := fun _ _ _ _ _ _ => True).
-      unset_all; subst; cbn in *.
-      destruct_chain_step...
-      destruct_action_eval...
-  Qed. 
+  
   
 End Theories.
