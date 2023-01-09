@@ -13,7 +13,6 @@ From ConCert.Utils Require Import Automation.
 From ConCert.Utils Require Import Extras.
 
 
-
 Section Auction.
   Context `{Base : ChainBase}.
 
@@ -49,8 +48,6 @@ Section Auction.
 
   Inductive Msg :=
   | bid
-(*  | view
-  | view_highest_bid*)
   | finalize.
 
   MetaCoq Run (make_setters State).
@@ -58,7 +55,7 @@ Section Auction.
   Section Serialization.
 
     Global Instance Msg_serializable : Serializable Msg :=
-      Derive Serializable Msg_rect<bid, (*view, view_highest_bid,*) finalize>.
+      Derive Serializable Msg_rect<bid, finalize>.
 
     Global Instance Setup_serializable : Serializable Setup :=
       Derive Serializable Setup_rect<setup>.
@@ -83,10 +80,6 @@ Section Auction.
     let duration := setup_duration setup in
     let minimum_raise := setup_minimum_raise setup in
     (* TODO: add checks?*)
-    (* Feels like we shouldn't need this... *)
-    do if (ctx_from ctx =? ctx_contract_address ctx)%address
-       then Err default_error
-       else Ok tt;
     Ok (build_state
           not_sold_yet  (* Item is not sold initially *)
           seller        (* Seller is the creator of the auction *)
@@ -199,7 +192,9 @@ Section Theories.
     unfold receive in arg;
     unfold place_bid in arg;
     unfold finalize_auction in arg.
-  
+
+  (* No money stuck *)
+  (* Contract does not get stuck unless intended *)
   (** ** Bid correct *)
   (* In no reachable state is the seller the highest bidder *)
   Lemma seller_cannot_bid_on_own_auction bstate caddr :
@@ -210,8 +205,10 @@ Section Theories.
         auction_highest_bidder cstate <> Some (auction_seller cstate).
   Proof with auto.
     contract_induction; intros; cbn in *...
-    - destruct result;
-      repeat just_do_it init_some.
+    - destruct result.
+      cbn in *.
+      inversion init_some.
+      congruence.
     - unfold_receive receive_some;
       destruct (address_eqb_spec (ctx_from ctx) (auction_seller prev_state));
         repeat just_do_it receive_some;
@@ -260,12 +257,16 @@ Section Theories.
     contract_induction;
       intros; (try apply IH in H as H'); cbn in *; auto.
     - repeat split.
-      + unfold init in init_some.
-        destruct_match in init_some...
+      + destruct result.
+        unfold init in init_some.
         now inversion init_some.
-      + unfold init in init_some.
-        destruct (address_eqb_spec (ctx_from ctx) (ctx_contract_address ctx));
-          [| inversion init_some]; auto.
+      + instantiate (DeployFacts := fun _ ctx => ctx.(ctx_from) <> ctx.(ctx_contract_address)).  assert (ctx_from ctx <> ctx_contract_address ctx).
+        { pose proof (eq_refl : DeployFacts =
+                                  fun (_ : Chain) (ctx : ContractCallContext) =>
+                                    ctx_from ctx <> ctx_contract_address ctx).
+          now rewrite H in facts. }.
+        destruct setup0; destruct result; cbn in *.
+        now inversion init_some.
       + auto.
     - destruct IH as [IH1 [IH2 IH3]]; split;
       inversion IH3; auto...
@@ -314,12 +315,20 @@ Section Theories.
           rewrite H3 in IH2...
     - destruct IH as [IH1 [IH2 IH3]]; repeat split...
       now rewrite <- perm.
-    - instantiate (DeployFacts := fun _ _ => True).
-      instantiate (CallFacts := fun _ _ _ _ _ => True).
+    - instantiate (CallFacts := fun _ _ _ _ _ => True).
       instantiate (AddBlockFacts := fun _ _ _ _ _ _ => True).
       unset_all; subst; cbn in *.
       destruct_chain_step...
       destruct_action_eval...
+      apply undeployed_contract_no_out_queue in not_deployed...
+      + rewrite queue_prev in *.
+        apply Forall_inv in not_deployed.
+        destruct_address_eq; try congruence.
+        intro.
+        subst.
+        cbn in *.
+        apply n...
+      + now constructor.
   Qed. 
   
 (* Naïve one-step version first
