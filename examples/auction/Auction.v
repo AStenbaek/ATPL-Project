@@ -260,11 +260,8 @@ Section Theories.
       + destruct result.
         unfold init in init_some.
         now inversion init_some.
-      + instantiate (DeployFacts := fun _ ctx => ctx.(ctx_from) <> ctx.(ctx_contract_address)).  assert (ctx_from ctx <> ctx_contract_address ctx).
-        { pose proof (eq_refl : DeployFacts =
-                                  fun (_ : Chain) (ctx : ContractCallContext) =>
-                                    ctx_from ctx <> ctx_contract_address ctx).
-          now rewrite H in facts. }.
+      + instantiate (DeployFacts := fun _ ctx => ctx.(ctx_from) <> ctx.(ctx_contract_address)).
+        unfold DeployFacts in *.
         destruct setup0; destruct result; cbn in *.
         now inversion init_some.
       + auto.
@@ -373,6 +370,5 @@ Section Theories.
       repeat just_do_it H;
       now inversion H.
   Qed.
-  
   
 End Theories.
