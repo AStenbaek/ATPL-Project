@@ -80,6 +80,7 @@ Section Auction.
     let duration := setup_duration setup in
     let minimum_raise := setup_minimum_raise setup in
     (* TODO: add checks?*)
+    do if ctx.(ctx_amount) =? 0 then Ok tt else Err default_error;
     Ok (build_state
           not_sold_yet  (* Item is not sold initially *)
           seller        (* Seller is the creator of the auction *)
@@ -143,9 +144,14 @@ Section Auction.
     (ctx : ContractCallContext)
     (state : State)
     : result (State * list ActionBody) Error :=
+    let amount := ctx.(ctx_amount) in
     let curr_slot := current_slot chain in
     let start_slot := auction_creation_slot state in
     let dur := auction_duration state in
+    (* Ensure no currency is passed to finalize *)
+    do if amount =? 0
+       then Ok tt
+       else Err default_error;
     (* Ensure the auction has ended *)
     do if (curr_slot <? start_slot + dur)%nat
        then Ok tt
@@ -192,8 +198,149 @@ Section Theories.
     unfold receive in arg;
     unfold place_bid in arg;
     unfold finalize_auction in arg.
-
-  (* No money stuck *)
+  
+  Lemma no_highest_bidder_zero_balance bstate caddr :
+    reachable bstate ->
+    env_contracts bstate caddr = Some (Auction.contract : WeakContract) ->
+    exists cstate,
+      contract_state bstate caddr = Some cstate /\
+        (forall amt, cstate.(auction_state) = not_sold_yet ->
+                cstate.(auction_current_price) = amt ->
+                cstate.(auction_highest_bidder) = None ->
+                env_account_balances bstate caddr = sumZ act_body_amount (outgoing_acts bstate caddr)).
+  Proof with cbn in *.
+    contract_induction; intros...
+    - eauto.
+    - unfold init in init_some.
+      remember (ctx_amount ctx =? 0).
+      symmetry in Heqb.
+      destruct b; try congruence.
+      now rewrite Z.eqb_eq in Heqb.
+    - pose proof (IH amt H H0 H1).
+      rewrite Z.sub_move_r.
+      now rewrite Z.add_comm.
+    - rewrite sumZ_app.
+      unfold_receive receive_some.
+      repeat just_do_it receive_some;
+        destruct prev_state;
+        destruct new_state;
+        inversion receive_some;
+        now cbn in *.
+    - destruct prev_state;
+        destruct new_state;
+        unfold_receive receive_some;
+        repeat just_do_it receive_some;
+        inversion receive_some;
+        now cbn in *.
+    - rewrite <- perm; eauto.
+    - solve_facts.
+  Qed. 
+        
+  Lemma not_sold_contract_balance bstate caddr :
+    reachable bstate ->
+    env_contracts bstate caddr = Some (Auction.contract : WeakContract) ->
+    exists cstate,
+      contract_state bstate caddr = Some cstate /\
+        (forall amt addr, cstate.(auction_state) = not_sold_yet ->
+                     cstate.(auction_current_price) = amt ->
+                     ((cstate.(auction_highest_bidder) = Some addr ->
+                       env_account_balances bstate caddr = amt + (sumZ act_body_amount (outgoing_acts bstate caddr))) /\
+                        (cstate.(auction_highest_bidder) = None ->
+                         env_account_balances bstate caddr = sumZ act_body_amount (outgoing_acts bstate caddr)))).
+  Proof with cbn in *.
+    contract_induction; intros...
+    - eauto.
+    (* Init *)
+    - split; intros; unfold init in *.
+      (* Some new bidder *)
+      + destruct result; just_do_it init_some.
+      (* No new bidder *)
+      + remember (ctx_amount ctx =? 0).
+        symmetry in Heqb.
+        destruct b; try congruence.
+        now rewrite Z.eqb_eq in Heqb.
+    (* Outgoing transfer *)
+    - split; intros...
+      (* Some new bidder *)
+      + rewrite Z.sub_move_r.
+        rewrite <- Z.add_assoc.
+        rewrite (Z.add_comm (sumZ act_body_amount out_acts) (act_body_amount out_act)).
+        eapply IH; eauto.
+      (* No new bidder *)
+      + pose proof (IH amt addr H H0) as [IH1 IH2].
+        pose proof (IH2 H1).
+        rewrite Z.sub_move_r.
+        now rewrite Z.add_comm.
+    (* Receive Nonrecursive *)
+    - split; intros...
+      (* Some new bidder *)
+      + rewrite sumZ_app.
+        destruct prev_state.
+        destruct new_state.
+        unfold_receive receive_some...
+        repeat just_do_it receive_some...
+        * inversion receive_some...
+          subst.
+          rewrite Z.add_comm.
+          rewrite <- Z.sub_move_r.
+          rewrite Z.add_0_r.
+          eapply IH; eauto.
+        * inversion receive_some...
+          subst.
+          rewrite Z.add_comm.
+          rewrite <- Z.sub_move_r.
+          eapply IH; eauto.
+        * inversion receive_some...
+          subst.
+          congruence.
+      (* No new bidder *)
+      + rewrite sumZ_app.
+        unfold_receive receive_some.
+        repeat just_do_it receive_some;
+          destruct prev_state;
+          destruct new_state;
+          inversion receive_some;
+          now cbn in *.
+    (* Receive Recursive *)
+    - split; intros...
+      + rewrite sumZ_app.
+        destruct prev_state.
+        destruct new_state.
+        unfold_receive receive_some...
+        repeat just_do_it receive_some...
+        * inversion receive_some...
+          destruct head...
+          ** destruct action_facts as [AH1 [AH2 AH3]]; subst.
+            congruence. 
+          ** destruct action_facts as [AH1 [AH2 [AH3 AH4]]]; subst.
+            rewrite Z.add_0_r.
+            rewrite Z.add_assoc.
+            rewrite (Z.add_comm (ctx_amount ctx) auction_current_price0).
+            rewrite <- Z.add_assoc.
+            eapply IH; auto. 
+          ** destruct action_facts. 
+        * unfold_receive receive_some;
+            repeat just_do_it receive_some;
+            inversion receive_some...
+          subst.
+          destruct head.
+          ** destruct action_facts as [AH1 [AH2 AH3]]; congruence.
+          ** destruct action_facts as [AH1 [AH2 [AH3 AH4]]]; subst...
+             eapply IH; auto.
+          ** destruct action_facts.
+        * unfold_receive receive_some;
+            repeat just_do_it receive_some;
+            inversion receive_some; congruence.
+      + destruct prev_state;
+        destruct new_state;
+        unfold_receive receive_some;
+        repeat just_do_it receive_some;
+        inversion receive_some;
+          now cbn in *.
+    - split; intros; rewrite <- perm; eapply IH; eauto.
+    - solve_facts.
+  Qed.                                        
+                                        
   (* Contract does not get stuck unless intended *)
   (** ** Bid correct *)
   (* In no reachable state is the seller the highest bidder *)
@@ -208,16 +355,16 @@ Section Theories.
     - destruct result.
       cbn in *.
       inversion init_some.
-      congruence.
+      just_do_it init_some.
     - unfold_receive receive_some;
       destruct (address_eqb_spec (ctx_from ctx) (auction_seller prev_state));
         repeat just_do_it receive_some;
-        vm_compute in receive_some; inversion receive_some; cbn in *; auto;
+       cbn in receive_some; inversion receive_some; cbn in *; auto;
         intro; apply n; vm_compute; inversion H...
     - unfold_receive receive_some;
       destruct (address_eqb_spec (ctx_from ctx) (auction_seller prev_state));
         repeat just_do_it receive_some;
-        vm_compute in receive_some; inversion receive_some; cbn in *; auto;
+        cbn in receive_some; inversion receive_some; cbn in *; auto;
         intro; apply n; vm_compute; inversion H...
     - instantiate (DeployFacts := fun _ _ => True).
       instantiate (CallFacts := fun _ _ _ _ _ => True).
@@ -259,11 +406,11 @@ Section Theories.
     - repeat split.
       + destruct result.
         unfold init in init_some.
-        now inversion init_some.
+        just_do_it init_some.
       + instantiate (DeployFacts := fun _ ctx => ctx.(ctx_from) <> ctx.(ctx_contract_address)).
         unfold DeployFacts in *.
         destruct setup0; destruct result; cbn in *.
-        now inversion init_some.
+        just_do_it init_some.
       + auto.
     - destruct IH as [IH1 [IH2 IH3]]; split;
       inversion IH3; auto...
@@ -277,7 +424,7 @@ Section Theories.
              inversion H; congruence.
           ** inversion receive_some; cbn in *.
              congruence.
-        * do 3 just_do_it receive_some.
+        * do 4 just_do_it receive_some.
           inversion receive_some; cbn in *...
       + unfold receive in receive_some; cbn in *.
         do 2 just_do_it receive_some;
