@@ -421,7 +421,7 @@ Section Theories.
       + rewrite Z.sub_move_r.
         rewrite <- Z.add_assoc.
         rewrite (Z.add_comm (sumZ act_body_amount out_acts) (act_body_amount out_act)).
-        eapply IH; eauto.
+        now eapply IH.
       (* No new bidder *)
       + destruct IH as [IH _].
         pose proof (IH amt addr H H0) as [IH1 IH2].
@@ -461,36 +461,21 @@ Section Theories.
       + unfold_receive receive_some.
         remember (ctx_amount ctx =? 0).
         symmetry in Heqb.
-        destruct b.
-        2: { destruct prev_state;
-             destruct new_state;
-             destruct auction_state0;
-             repeat just_do_it receive_some;
-             inversion receive_some; easy. }
-        rewrite Z.eqb_eq in Heqb.
-        rewrite sumZ_app.
-        destruct prev_state.
-        destruct new_state.
-        destruct auction_highest_bidder0.
-        { destruct auction_state0;
-            repeat just_do_it receive_some...
-          * inversion receive_some; easy.
-          * inversion receive_some...
-             rewrite <- Heqb;
-              rewrite <- Z.add_assoc;
-              rewrite (Z.add_comm (ctx_amount ctx) (sumZ act_body_amount prev_out_queue));
-              rewrite Z.add_assoc;
-              rewrite <- Z.sub_move_r;
-              rewrite <- H6;
-              destruct IH as [IH _];
-               now eapply IH. }
-        { repeat just_do_it receive_some...
-          inversion receive_some...
-          rewrite <- Z.add_0_r.
-          rewrite <- Heqb.
-          rewrite <- Z.sub_move_r.
-          destruct IH as [_ IH].
-          eapply IH; now subst. }
+        destruct b;
+          [ rewrite Z.eqb_eq in Heqb; rewrite sumZ_app |];
+          destruct prev_state;
+          destruct new_state;
+          destruct auction_highest_bidder0;
+          destruct auction_state0;
+          repeat just_do_it receive_some;
+          inversion receive_some; try easy...
+        rewrite <- Heqb.
+        rewrite <- Z.add_assoc.
+        rewrite (Z.add_comm (ctx_amount ctx) (sumZ act_body_amount prev_out_queue)).
+        rewrite Z.add_assoc.
+        rewrite <- Z.sub_move_r.
+        rewrite <- H6.
+        now eapply IH.
     (* Receive Recursive *)
     - instantiate (CallFacts := fun _ ctx _ _ _ => ctx_from ctx <> ctx_contract_address ctx);
         subst CallFacts; cbn in *; easy.
@@ -503,8 +488,6 @@ Section Theories.
     - no_self_call_facts from_reachable bstate_from to_addr queue_prev msg.
   Qed.
         
-  
-  
   (* Contract does not get stuck unless intended *)
   (** ** Bid correct *)
   (* In no reachable state is the seller the highest bidder *)
@@ -547,9 +530,7 @@ Section Theories.
     Proof.
       intros; unfold_receive H1; repeat just_do_it H1.
     Qed.
-  
-   
-  
+
 (* Naïve one-step version first
    Maybe look into something like:
    "if the auction is finished in blockstate a and some blockstate b
