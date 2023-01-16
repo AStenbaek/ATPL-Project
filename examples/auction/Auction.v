@@ -268,20 +268,28 @@ Section Theories.
       + now constructor.
   Qed.
 
-  Ltac no_self_call_facts from_reachable bstate_from to_addr queue_prev msg :=
+  Check ChainTrace.
+
+  Ltac solve_no_self_call_facts :=
     solve_facts;
-      apply trace_reachable in from_reachable;
-      pose proof (no_self_calls bstate_from to_addr ltac:(assumption) ltac:(assumption)) as all;
-      destruct all as [? [? [? [? all]]]];
-      unfold outgoing_acts in *;
-      rewrite queue_prev in *;
-      cbn in all;
-      destruct_address_eq; cbn in *; auto;
-      inversion_clear all as [|? ? hd _];
-      destruct msg;
-      [contradiction
-      | rewrite address_eq_refl in hd;
-        congruence].
+    match goal with
+    | [ msg : option SerializedValue,
+          from_reachable: ChainTrace empty_state ?bstate_from,
+            queue_prev: chain_state_queue ?bstate_from = _ |- _ <> ?to_addr ] =>
+        apply trace_reachable in from_reachable;
+        pose proof (no_self_calls bstate_from to_addr ltac:(assumption) ltac:(assumption)) as all;
+        destruct all as [? [? [? [? all]]]];
+        unfold outgoing_acts in *;
+        rewrite queue_prev in *;
+        cbn in all;
+        destruct_address_eq; cbn in *; auto;
+        inversion_clear all as [|? ? hd _];
+        destruct msg;
+        [contradiction
+        | rewrite address_eq_refl in hd;
+          congruence]
+    | _ => fail
+    end.
   
   Lemma no_highest_bidder_zero_balance bstate caddr :
     reachable bstate ->
@@ -312,7 +320,7 @@ Section Theories.
     - instantiate (CallFacts := fun _ ctx _ _ _ => ctx_from ctx <> ctx_contract_address ctx);
         subst CallFacts; cbn in *; easy.
     - rewrite <- perm; eauto.
-    - no_self_call_facts from_reachable bstate_from to_addr queue_prev msg.
+    - solve_no_self_call_facts.
   Qed.
 
   Lemma not_sold_contract_balance bstate caddr :
@@ -381,7 +389,7 @@ Section Theories.
     (* Permutations *)  
     - split; intros; rewrite <- perm; now eapply IH.
     (* Facts *)
-    - no_self_call_facts from_reachable bstate_from to_addr queue_prev msg.
+    - solve_no_self_call_facts.
   Qed.
   
   Lemma not_sold_contract_balance_full bstate caddr :
@@ -424,8 +432,8 @@ Section Theories.
         now eapply IH.
       (* No new bidder *)
       + destruct IH as [IH _].
-        pose proof (IH amt addr H H0) as [IH1 IH2].
-        pose proof (IH2 H1).
+        pose proof (IH amt addr H H0) as [_ IH'].
+        pose proof (IH' H1).
         rewrite Z.sub_move_r.
         now rewrite Z.add_comm.
       (* Auction ends *)
@@ -485,7 +493,7 @@ Section Theories.
         | destruct IH as [_ IH]];
         intros; rewrite <- perm; now eapply IH.
     (* Facts *)
-    - no_self_call_facts from_reachable bstate_from to_addr queue_prev msg.
+    - solve_no_self_call_facts.
   Qed.
         
   (* Contract does not get stuck unless intended *)
