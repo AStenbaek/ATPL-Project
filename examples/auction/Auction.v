@@ -79,7 +79,7 @@ Section Auction.
     let start_price := setup_start_price setup in
     let duration := setup_duration setup in
     let minimum_raise := setup_minimum_raise setup in
-    (* TODO: add checks?*)
+    (* Ensure seller does not transfer during initialization *)
     do if ctx.(ctx_amount) =? 0 then Ok tt else Err default_error;
     Ok (build_state
           not_sold_yet  (* Item is not sold initially *)
@@ -198,14 +198,97 @@ Section Theories.
     unfold receive in arg;
     unfold place_bid in arg;
     unfold finalize_auction in arg.
+
+  Lemma no_self_calls bstate caddr:
+    reachable bstate ->
+    env_contracts bstate caddr = Some (Auction.contract : WeakContract) ->
+    exists cstate,
+      contract_state bstate caddr = Some cstate /\
+        (auction_highest_bidder cstate <> Some caddr /\
+         auction_seller cstate <> caddr /\
+         Forall (fun abody => match abody with
+                           | act_transfer to _ => (to =? caddr)%address = false
+                           | _ => False
+                           end) (outgoing_acts bstate caddr)).
+  Proof with auto.
+    contract_induction;
+      intros; (try apply IH in H as H'); cbn in *; auto.
+    - repeat split.
+      + destruct result.
+        unfold init in init_some.
+        just_do_it init_some.
+      + instantiate (DeployFacts := fun _ ctx => ctx.(ctx_from) <> ctx.(ctx_contract_address)).
+        unfold DeployFacts in *.
+        destruct setup0; destruct result; cbn in *.
+        just_do_it init_some.
+      + auto.
+    - destruct IH as [IH1 [IH2 IH3]]; split;
+      inversion IH3; auto...
+    - destruct IH as [IH1 [IH2 IH3]]; split;
+      try apply Forall_app; try split.
+      + unfold receive in receive_some.
+        do 2 just_do_it receive_some...
+        * repeat just_do_it receive_some.
+          ** inversion receive_some; cbn in *.
+             intro.
+             inversion H; congruence.
+          ** inversion receive_some; cbn in *.
+             congruence.
+        * do 4 just_do_it receive_some.
+          inversion receive_some; cbn in *...
+      + unfold receive in receive_some; cbn in *.
+        do 2 just_do_it receive_some;
+        auto; repeat just_do_it receive_some; inversion receive_some...
+      + apply Forall_app; split...
+        unfold receive in receive_some.
+        do 2 just_do_it receive_some; try (inversion receive_some; auto; fail);
+        repeat just_do_it receive_some; inversion receive_some;
+        auto;
+        apply Forall_cons;
+        auto;
+        apply address_eq_ne;
+        intro;
+        congruence.
+    - destruct IH as [IH1 [IH2 IH3]];
+        repeat split; 
+        inversion IH3;
+        destruct head; subst; auto;
+        destruct action_facts as [A1 [A2 A3]]; subst; easy.
+    - destruct IH as [IH1 [IH2 IH3]]; repeat split...
+      now rewrite <- perm.
+    - solve_facts.
+      apply undeployed_contract_no_out_queue in not_deployed...
+      + rewrite queue_prev in *.
+        apply Forall_inv in not_deployed.
+        destruct_address_eq; try congruence.
+        intro.
+        subst.
+        cbn in *.
+        apply n...
+      + now constructor.
+  Qed.
+
+  Ltac no_self_call_facts from_reachable bstate_from to_addr queue_prev msg :=
+    solve_facts;
+      apply trace_reachable in from_reachable;
+      pose proof (no_self_calls bstate_from to_addr ltac:(assumption) ltac:(assumption)) as all;
+      destruct all as [? [? [? [? all]]]];
+      unfold outgoing_acts in *;
+      rewrite queue_prev in *;
+      cbn in all;
+      destruct_address_eq; cbn in *; auto;
+      inversion_clear all as [|? ? hd _];
+      destruct msg;
+      [contradiction
+      | rewrite address_eq_refl in hd;
+        congruence].
   
   Lemma no_highest_bidder_zero_balance bstate caddr :
     reachable bstate ->
     env_contracts bstate caddr = Some (Auction.contract : WeakContract) ->
     exists cstate,
       contract_state bstate caddr = Some cstate /\
-        (forall amt, cstate.(auction_state) = not_sold_yet ->
-                cstate.(auction_current_price) = amt ->
+        (cstate.(auction_state) = not_sold_yet ->
                 cstate.(auction_highest_bidder) = None ->
                 env_account_balances bstate caddr = sumZ act_body_amount (outgoing_acts bstate caddr)).
   Proof with cbn in *.
@@ -216,7 +299,7 @@ Section Theories.
       symmetry in Heqb.
       destruct b; try congruence.
       now rewrite Z.eqb_eq in Heqb.
-    - pose proof (IH amt H H0 H1).
+    - pose proof (IH H H0).
       rewrite Z.sub_move_r.
       now rewrite Z.add_comm.
     - rewrite sumZ_app.
@@ -226,15 +309,11 @@ Section Theories.
         destruct new_state;
         inversion receive_some;
         now cbn in *.
-    - destruct prev_state;
-        destruct new_state;
-        unfold_receive receive_some;
-        repeat just_do_it receive_some;
-        inversion receive_some;
-        now cbn in *.
+    - instantiate (CallFacts := fun _ ctx _ _ _ => ctx_from ctx <> ctx_contract_address ctx);
+        subst CallFacts; cbn in *; easy.
     - rewrite <- perm; eauto.
-    - solve_facts.
-  Qed. 
+    - no_self_call_facts from_reachable bstate_from to_addr queue_prev msg.
+  Qed.
 
   Lemma not_sold_contract_balance bstate caddr :
     reachable bstate ->
@@ -297,37 +376,15 @@ Section Theories.
           inversion receive_some;
           now cbn in *.
     (* Receive Recursive *)
-    - split; intros...
-      (* Some new bidder *)
-      + rewrite sumZ_app.
-        destruct prev_state.
-        destruct new_state.
-        unfold_receive receive_some...
-        repeat just_do_it receive_some;
-          inversion receive_some; cbn in *;
-          subst; destruct head; try easy...
-        * destruct action_facts as [AH1 [AH2 [AH3 AH4]]]; subst.
-          rewrite Z.add_0_r.
-          rewrite Z.add_assoc.
-          rewrite (Z.add_comm (ctx_amount ctx) auction_current_price0).
-          rewrite <- Z.add_assoc.
-          now eapply IH.
-        * destruct action_facts as [AH1 [AH2 [AH3 AH4]]]; subst...
-          now eapply IH.
-      (* No new bidder *)
-      + destruct prev_state;
-          destruct new_state;
-          unfold_receive receive_some;
-          repeat just_do_it receive_some;
-          inversion receive_some;
-          now cbn in *.
+    - instantiate (CallFacts := fun _ ctx _ _ _ => ctx_from ctx <> ctx_contract_address ctx);
+        subst CallFacts; cbn in *; easy.
     (* Permutations *)  
     - split; intros; rewrite <- perm; now eapply IH.
     (* Facts *)
-    - solve_facts.
+    - no_self_call_facts from_reachable bstate_from to_addr queue_prev msg.
   Qed.
   
-  Lemma not_sold_contract_balance' bstate caddr :
+  Lemma not_sold_contract_balance_full bstate caddr :
     reachable bstate ->
     env_contracts bstate caddr = Some (Auction.contract : WeakContract) ->
     exists cstate,
@@ -341,7 +398,8 @@ Section Theories.
                        (cstate.(auction_highest_bidder) = None ->
                         env_account_balances bstate caddr = sumZ act_body_amount (outgoing_acts bstate caddr)))) /\
         (* All money is accounted for when sold *)
-        (forall addr, cstate.(auction_state) = sold addr -> env_account_balances bstate caddr = sumZ act_body_amount (outgoing_acts bstate caddr)).
+        (forall addr, cstate.(auction_state) = sold addr ->
+                 env_account_balances bstate caddr = sumZ act_body_amount (outgoing_acts bstate caddr)).
   Proof with cbn in *.
     contract_induction; intros...
     (* Deploy *)
@@ -434,112 +492,16 @@ Section Theories.
           destruct IH as [_ IH].
           eapply IH; now subst. }
     (* Receive Recursive *)
-    - repeat split; intros...
-      (* Some new bidder *)
-      + destruct IH as [IH _].
-        rewrite sumZ_app.
-        destruct prev_state.
-        destruct new_state.
-        unfold_receive receive_some...
-        repeat just_do_it receive_some;
-          inversion receive_some; cbn in *;
-          subst; destruct head; try easy...
-        * destruct action_facts as [AH1 [AH2 [AH3 AH4]]]; subst.
-          rewrite Z.add_0_r.
-          rewrite Z.add_assoc.
-          rewrite (Z.add_comm (ctx_amount ctx) auction_current_price0).
-          rewrite <- Z.add_assoc.
-          now eapply IH.
-        * destruct action_facts as [AH1 [AH2 [AH3 AH4]]]; subst...
-          now eapply IH.
-      (* No new bidder *)
-      + destruct IH as [IH _].
-        destruct prev_state;
-          destruct new_state;
-          unfold_receive receive_some;
-          repeat just_do_it receive_some;
-          inversion receive_some;
-          now cbn in *.
-      (* Auction ends *)
-      + rewrite sumZ_app.
-        destruct prev_state;
-          destruct new_state...
-        remember (ctx_amount ctx =? 0).
-        symmetry in Heqb.
-        destruct b;
-          [| unfold_receive receive_some;
-             rewrite Heqb in receive_some;
-             destruct auction_state0;
-             repeat just_do_it receive_some;
-             now inversion receive_some ].
-        rewrite Z.eqb_eq in Heqb.
-        destruct head; try easy...
-        * destruct action_facts as [_ [_ A]];
-            unfold_receive receive_some;
-            rewrite A in receive_some;
-            now repeat just_do_it receive_some.
-        * destruct action_facts as [A1 [A2 [A3 A4]]]...
-          unfold_receive receive_some;
-          destruct auction_highest_bidder0;
-          destruct auction_state0;
-            repeat just_do_it receive_some...
-          ** now inversion receive_some...
-          ** inversion receive_some...
-             rewrite A2 in IH.
-             rewrite Heqb in IH...
-             rewrite <- H6.
-             rewrite Z.add_0_r.
-             now eapply IH.
-          ** now inversion receive_some...
+    - instantiate (CallFacts := fun _ ctx _ _ _ => ctx_from ctx <> ctx_contract_address ctx);
+        subst CallFacts; cbn in *; easy.
     (* Permutations *)  
-    - split.
-      + intros.
-        split.
-        * intros.
-          rewrite <- perm.
-          now eapply IH.
-        * intros.
-          rewrite <- perm.
-          destruct IH as [IH _].
-          now eapply IH.
-      + intros.
-        rewrite <- perm.
-        destruct IH as [_ IH].
-        now eapply IH.
+    - split;
+        [ destruct IH as [IH _]
+        | destruct IH as [_ IH]];
+        intros; rewrite <- perm; now eapply IH.
     (* Facts *)
-    - solve_facts.
+    - no_self_call_facts from_reachable bstate_from to_addr queue_prev msg.
   Qed.
-                                        
-  Lemma no_money_stuck_when_sold bstate caddr :
-    reachable bstate ->
-    env_contracts bstate caddr = Some (Auction.contract : WeakContract) ->
-    exists cstate,
-      contract_state bstate caddr = Some cstate /\
-        (forall addr, cstate.(auction_state) = sold addr ->
-                 env_account_balances bstate caddr = sumZ act_body_amount (outgoing_acts bstate caddr)).
-  Proof with cbn in *.
-    contract_induction; intros...
-    - eauto.
-    - destruct result; repeat just_do_it init_some.
-    - rewrite Z.sub_move_r.
-      now rewrite Z.add_comm.
-    - rewrite sumZ_app.
-      unfold_receive receive_some.
-      destruct new_state...
-      destruct prev_state...
-      destruct auction_state1...
-      + repeat just_do_it receive_some...
-        * subst...
-          inversion receive_some...
-        * subst...
-          inversion receive_some...
-        * inversion receive_some...
-          
-          admit.
-      + repeat just_do_it receive_some.
-        destruct prev_state.
-        destruct new_state.
-        inversion receive_some...
         
   
   
@@ -586,74 +548,7 @@ Section Theories.
       intros; unfold_receive H1; repeat just_do_it H1.
     Qed.
   
-  Lemma no_self_calls bstate caddr:
-    reachable bstate ->
-    env_contracts bstate caddr = Some (Auction.contract : WeakContract) ->
-    exists cstate,
-      contract_state bstate caddr = Some cstate /\
-        (auction_highest_bidder cstate <> Some caddr /\
-         auction_seller cstate <> caddr /\
-         Forall (fun abody => match abody with
-                           | act_transfer to _ => (to =? caddr)%address = false
-                           | _ => False
-                           end) (outgoing_acts bstate caddr)).
-  Proof with auto.
-    contract_induction;
-      intros; (try apply IH in H as H'); cbn in *; auto.
-    - repeat split.
-      + destruct result.
-        unfold init in init_some.
-        just_do_it init_some.
-      + instantiate (DeployFacts := fun _ ctx => ctx.(ctx_from) <> ctx.(ctx_contract_address)).
-        unfold DeployFacts in *.
-        destruct setup0; destruct result; cbn in *.
-        just_do_it init_some.
-      + auto.
-    - destruct IH as [IH1 [IH2 IH3]]; split;
-      inversion IH3; auto...
-    - destruct IH as [IH1 [IH2 IH3]]; split;
-      try apply Forall_app; try split.
-      + unfold receive in receive_some.
-        do 2 just_do_it receive_some...
-        * repeat just_do_it receive_some.
-          ** inversion receive_some; cbn in *.
-             intro.
-             inversion H; congruence.
-          ** inversion receive_some; cbn in *.
-             congruence.
-        * do 4 just_do_it receive_some.
-          inversion receive_some; cbn in *...
-      + unfold receive in receive_some; cbn in *.
-        do 2 just_do_it receive_some;
-        auto; repeat just_do_it receive_some; inversion receive_some...
-      + apply Forall_app; split...
-        unfold receive in receive_some.
-        do 2 just_do_it receive_some; try (inversion receive_some; auto; fail);
-        repeat just_do_it receive_some; inversion receive_some;
-        auto;
-        apply Forall_cons;
-        auto;
-        apply address_eq_ne;
-        intro;
-        congruence.
-    - destruct IH as [IH1 [IH2 IH3]];
-        repeat split; 
-        inversion IH3;
-        destruct head; subst; auto;
-        destruct action_facts as [A1 [A2 A3]]; subst; easy.
-    - destruct IH as [IH1 [IH2 IH3]]; repeat split...
-      now rewrite <- perm.
-    - solve_facts.
-      apply undeployed_contract_no_out_queue in not_deployed...
-      + rewrite queue_prev in *.
-        apply Forall_inv in not_deployed.
-        destruct_address_eq; try congruence.
-        intro.
-        subst.
-        cbn in *.
-        apply n...
-      + now constructor.
-  Qed. 
+   
   
 (* Naïve one-step version first
    Maybe look into something like:
