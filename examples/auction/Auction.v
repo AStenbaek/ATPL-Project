@@ -24,7 +24,6 @@ Section Auction.
 
   Record Setup :=
     setup {
-        setup_seller : Address;
         setup_item : string;
         setup_duration : nat;
         setup_start_price : Amount;
@@ -384,7 +383,7 @@ Section Theories.
           inversion receive_some;
           now cbn in *.
     (* Receive Recursive *)
-    - instantiate (CallFacts := fun _ ctx _ _ _ => ctx_from ctx <> ctx_contract_address ctx);
+    - instantiate (CallFacts := fun _ ctx _ _ _ => ctx_from ctx <> ctx_contract_address ctx).
         subst CallFacts; cbn in *; easy.
     (* Permutations *)  
     - split; intros; rewrite <- perm; now eapply IH.
