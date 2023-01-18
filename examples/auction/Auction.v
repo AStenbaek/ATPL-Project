@@ -11,6 +11,7 @@ From ConCert.Execution Require Import InterContractCommunication.
 From ConCert.Utils Require Import RecordUpdate.
 From ConCert.Utils Require Import Automation.
 From ConCert.Utils Require Import Extras.
+Require Import Lia.
 
 
 Section Auction.
@@ -581,4 +582,350 @@ Section Theories.
       now inversion H.
   Qed.
   
+  Theorem only_to_previous_bidder_and_no_more_money chain ctx prev msg new acts :
+    receive chain ctx prev msg = Ok (new, acts) ->
+    Forall (fun abody => match abody with
+                           | act_transfer to amount => match auction_highest_bidder prev with
+                                                      | Some bidder => to = bidder \/ to = auction_seller prev
+                                                      | None => True
+                                                      end
+                           | _ => True
+                           end) acts.
+  Proof.
+    intros receive_some.
+    unfold receive in receive_some.
+    destruct_match in receive_some; cbn in *; try congruence.
+    destruct_match in receive_some; cbn in *; try (inversion receive_some; easy).
+    - destruct_match in receive_some; cbn in *; try congruence.
+      destruct_match in receive_some; cbn in *; try congruence.
+      destruct_match in receive_some; cbn in *; try congruence.
+      destruct_match in receive_some; cbn in *; try congruence.
+      destruct_match in receive_some; cbn in *; try congruence.
+      inversion receive_some.
+      destruct (auction_highest_bidder prev); last easy.
+      apply list.Forall_singleton. easy.
+    - destruct_match in receive_some; cbn in *; try congruence.
+      destruct_match in receive_some; cbn in *; try congruence.
+      destruct_match in receive_some; cbn in *; try congruence.
+      destruct_match in receive_some; cbn in *; try congruence.
+      inversion receive_some.
+      apply list.Forall_singleton. destruct (auction_highest_bidder prev); easy.
+  Qed.
+
+  Definition state_constant `{A : Type} (f : State -> A) := forall chain ctx prev msg new acts,
+    receive chain ctx prev msg = Ok (new, acts) ->
+    f prev = f new.
+
+  Lemma seller_constant : state_constant (fun s => s.(auction_seller)).
+  Proof.
+    unfold state_constant. intros.
+    rename H into receive_some.
+    unfold receive in receive_some.
+    destruct_match in receive_some; cbn in *; try congruence.
+    destruct_match in receive_some; cbn in *; repeat destruct_match in receive_some; cbn in *; try congruence; inversion receive_some; reflexivity.
+  Qed.
+
+  Lemma item_constant : state_constant (fun s => s.(auction_item)).
+  Proof.
+    unfold state_constant.
+    intros. rename H into receive_some.
+    unfold receive in receive_some.
+    repeat just_do_it receive_some; inversion receive_some; auto.
+  Qed.
+
+  (* What's for the bidder?
+
+     As far as the bidder concerns, if he made an bid, and the current bidder is not him,
+     there should be a transfer to him with the exact same amount.
+
+     A weaker one is that, the amount that bidder transfers in equals the amount the contract
+     transfers back, if the bidder is not the current highest bidder, else adding the current
+     highest bid.
+   *)
+
+  Definition call_to_addr_amount {Msg} (call : ContractCallInfo Msg) :=
+    (call_from call, call_amount call).
+
+  Definition call_from_list {Msg} from (inc_calls : list (ContractCallInfo Msg)) :=
+    filter (fun c => (c.(call_from) =? from)%address) inc_calls.
+
+  Definition sumZ_call {Msg} (caller : Address) (inc_calls : list (ContractCallInfo Msg)) :=
+    sumZ (fun c => c.(call_amount)) (call_from_list caller inc_calls).
+
+  Definition sumZ_tx (to : Address) (txs : list Tx) :=
+    sumZ (fun tx => tx.(tx_amount)) (filter (fun tx => (tx.(tx_to) =? to)%address) txs).
+
+  Definition is_act_transfer_to destination (act : ActionBody) :=
+    match act with
+    | act_transfer to amount => (to =? destination)%address
+    | act_call to amount msg => (to =? destination)%address
+    | act_deploy amount c _ => false
+    end.
+
+  Definition sumZ_act (to : Address) (acts : list ActionBody) :=
+    sumZ act_body_amount (filter (fun act => is_act_transfer_to to act) acts).
+
+  Lemma act_only_transfer bstate caddr :
+    reachable bstate ->
+    env_contracts bstate caddr = Some (Auction.contract : WeakContract) ->
+    Forall (fun act => match act with
+                    | act_transfer to amount => True
+                    | act_call to amount msg => False
+                    | act_deploy amount c _ => False
+                    end
+      ) (outgoing_acts bstate caddr).
+  Proof.
+    contract_induction; intros; cbn in *; eauto.
+    - apply Forall_cons_iff in IH. destruct IH.
+      destruct out_act; try easy.
+    - unfold receive in receive_some. repeat just_do_it receive_some.
+      all: inversion receive_some; apply Forall_app; auto.
+    - apply Forall_cons_iff in IH. destruct IH.
+      unfold receive in receive_some. destruct head; try contradiction.
+      repeat just_do_it receive_some; inversion receive_some; apply Forall_app; auto.
+    - now rewrite <- perm.
+    - solve_facts.
+  Qed.
+
+  Theorem highest_bidder_fact chain ctx cstate new_state new_acts bidder :
+    receive chain ctx cstate (Some bid) = Ok (new_state, new_acts) ->
+    auction_highest_bidder new_state = Some bidder ->
+    ctx_from ctx = bidder /\ ctx_amount ctx = auction_current_price new_state.
+  Proof.
+    intros receive_some. unfold receive in receive_some.
+    do 6 just_do_it receive_some; inversion receive_some; cbn; easy.
+  Qed.
+
+  Theorem highest_bidder_not_seller bstate caddr :
+    reachable bstate ->
+    env_contracts bstate caddr = Some (Auction.contract : WeakContract) ->
+    exists cstate, contract_state bstate caddr = Some cstate /\
+    Some (auction_seller cstate) <> (auction_highest_bidder cstate).
+  Proof.
+    contract_induction; intros; cbn in *; eauto.
+    - repeat just_do_it init_some. now inversion init_some.
+    - pose proof (seller_constant _ _ _ _ _ _ receive_some). cbn in H.
+      unfold receive in receive_some. do 2 just_do_it receive_some.
+      + destruct (address_eqb_spec (ctx_from ctx) (auction_seller prev_state)).
+        repeat just_do_it receive_some. repeat just_do_it receive_some; inversion receive_some; subst; now cbn in *.
+      + repeat just_do_it receive_some; inversion receive_some; subst; now cbn in *.
+    - instantiate (CallFacts := fun _ ctx _ _ _ => ctx_from ctx <> ctx_contract_address ctx).
+      now unfold CallFacts in facts.
+    - solve_no_self_call_facts.
+  Qed.
+
+  Theorem highest_bidder_bid_before bstate caddr bidder (trace : ChainTrace empty_state bstate) :
+    env_contracts bstate caddr = Some (Auction.contract : WeakContract) ->
+    exists cstate inc_calls, incoming_calls Msg trace caddr = Some inc_calls /\
+                        contract_state bstate caddr = Some cstate /\
+                        (
+                          auction_highest_bidder cstate = Some bidder ->
+                          Exists (fun c => c.(call_from) = bidder /\ c.(call_amount) = auction_current_price cstate)
+                                 inc_calls
+                        ).
+  Proof.
+    contract_induction; intros; cbn in *; eauto.
+    - just_do_it init_some. inversion init_some. subst. now cbn in H.
+    - unfold receive in receive_some. just_do_it receive_some. destruct m.
+      + pose proof (highest_bidder_fact chain ctx prev_state new_state new_acts bidder).
+        cbn in H0. apply H0 in receive_some. destruct receive_some. subst. now apply Exists_cons_hd. easy.
+      + repeat just_do_it receive_some. inversion receive_some. cbn. rewrite <- H1 in H. cbn in H.
+        apply IH in H. now apply Exists_cons_tl.
+    - unfold receive in receive_some. just_do_it receive_some. destruct m.
+      + pose proof (highest_bidder_fact chain ctx prev_state new_state new_acts bidder).
+        cbn in H0. apply H0 in receive_some. destruct receive_some. subst. now apply Exists_cons_hd. easy.
+      + repeat just_do_it receive_some. inversion receive_some. cbn. rewrite <- H1 in H. cbn in H.
+        apply IH in H. now apply Exists_cons_tl.
+      (* could get around by no recursive call *)
+    - solve_facts.
+  Qed.
+
+  Theorem bidder_transfer_even bstate caddr bidder (trace : ChainTrace empty_state bstate) :
+    env_contracts bstate caddr = Some (Auction.contract : WeakContract) ->
+    exists cstate inc_calls, incoming_calls Msg trace caddr = Some inc_calls /\
+                        contract_state bstate caddr = Some cstate /\
+                        Forall (fun act => match act with
+                                        | act_transfer to amount => True
+                                        | act_call to amount msg => False
+                                        | act_deploy amount c _ => False
+                                        end
+                          ) (outgoing_acts bstate caddr) /\
+                        (
+                          cstate.(auction_highest_bidder) <> Some bidder ->
+                          cstate.(auction_seller) <> bidder ->
+                          sumZ_call bidder inc_calls = sumZ_tx bidder (outgoing_txs trace caddr) +
+                                                         sumZ_act bidder (outgoing_acts bstate caddr)
+                        ) /\
+                        (
+                          cstate.(auction_highest_bidder) = Some bidder ->
+                          sumZ_call bidder inc_calls = sumZ_tx bidder (outgoing_txs trace caddr) +
+                                                         sumZ_act bidder (outgoing_acts bstate caddr) +
+                                                         cstate.(auction_current_price)
+                        ).
+  Proof.
+    contract_induction; intros; try cbn in receive_some; try destruct IH; try split; try split; try intros; eauto.
+    - destruct H0. now apply H0 in H1.
+    - destruct H0. now apply H2 in H1.
+    - cbn in init_some. just_do_it init_some. inversion init_some. now subst.
+    - apply Forall_cons_iff in H. now destruct H.
+    - destruct out_act.
+      + apply H0 in H1. rewrite H1. destruct tx_act_match as (? & ? & ?). subst.
+        cbn. destruct (tx_to tx =? bidder)%address; unfold sumZ_tx, sumZ_act; cbn; lia.
+        easy.
+      + apply Forall_cons_iff in H. destruct H as [[]].
+      + apply Forall_cons_iff in H. destruct H as [[]].
+    - destruct out_act.
+      + apply H0 in H1. rewrite H1. destruct tx_act_match as (? & ? & ?). subst.
+        cbn. destruct (tx_to tx =? bidder)%address; unfold sumZ_tx, sumZ_act; cbn; lia.
+      + apply Forall_cons_iff in H. destruct H as [[]].
+      + apply Forall_cons_iff in H. destruct H as [[]].
+    - unfold receive in receive_some. repeat just_do_it receive_some.
+      all: inversion receive_some; apply Forall_app; auto.
+    - cbn. destruct (address_eqb_spec (ctx_from ctx) bidder); cbn.
+      + unfold receive in receive_some. do 2 just_do_it receive_some.
+        * repeat just_do_it receive_some; inversion receive_some; subst; try contradiction.
+        * remember (ctx_amount ctx =? 0). destruct b; last inversion receive_some.
+          repeat just_do_it receive_some; inversion receive_some; subst.
+          cbn in *. destruct H0. pose proof (H0 H1 H2). apply address_eq_ne in H2. rewrite H2.
+          apply eq_sym in Heqb. apply Z.eqb_eq in Heqb. rewrite Heqb. unfold sumZ_call,call_from_list in H4.
+          rewrite H4. cbn. unfold sumZ_act. reflexivity.
+      + destruct (auction_highest_bidder prev_state) eqn:?.
+        * destruct (address_eqb_spec a bidder).
+          {
+            assert (Some a = Some bidder); first easy.
+            apply H0 in H3. unfold sumZ_call, call_from_list in H3. rewrite H3.
+            rewrite e in Heqo.
+            destruct msg; last easy. destruct m.
+            - repeat just_do_it receive_some. inversion receive_some. subst.
+              cbn. inversion Heqo. rewrite address_eq_refl. cbn. now unfold sumZ_act.
+            - repeat just_do_it receive_some. inversion receive_some. subst. cbn in *. contradiction.
+          }
+          {
+            assert (Some a <> Some bidder); first easy.
+            apply H0 in H3. unfold sumZ_call, call_from_list in H3. rewrite H3.
+            destruct msg; last easy. destruct m.
+            - repeat just_do_it receive_some. inversion receive_some. subst.
+              cbn. inversion Heqo. rewrite (address_eq_ne _ _ n0). now unfold sumZ_act.
+            - repeat just_do_it receive_some. inversion receive_some. subst. cbn in *.
+              rewrite (address_eq_ne _ _ H2). now unfold sumZ_act.
+            - now apply seller_constant in receive_some.
+          }
+        * assert (None <> Some bidder); first easy.
+          apply H0 in H3. unfold sumZ_call, call_from_list in H3. rewrite H3.
+          unfold receive in receive_some. repeat just_do_it receive_some; inversion receive_some; subst; cbn in *.
+          easy.
+          rewrite (address_eq_ne _ _ H2). easy.
+          now apply seller_constant in receive_some.
+    - cbn. destruct (address_eqb_spec (ctx_from ctx) bidder); cbn.
+      + destruct (auction_highest_bidder prev_state) eqn:?.
+        * destruct (address_eqb_spec a bidder).
+          {
+            assert (Some a = Some bidder); first easy.
+            apply H0 in H2. unfold sumZ_call, call_from_list in H2.
+            destruct msg; last easy. destruct m.
+            - pose proof (highest_bidder_fact _ _ _ _ _ _ receive_some H1) as [_ ->].
+              repeat just_do_it receive_some. inversion receive_some. subst. cbn. inversion Heqo.
+              rewrite address_eq_refl. cbn. rewrite H2. now unfold sumZ_act.
+            - unfold receive in receive_some. unfold finalize_auction in receive_some.
+              destruct (Z.eqb_spec (ctx_amount ctx) 0); last inversion receive_some.
+              repeat just_do_it receive_some. inversion receive_some. subst. cbn in *.
+              rewrite e1. cbn.
+              destruct (address_eqb_spec (auction_seller prev_state) (ctx_from ctx)).
+              + cbn. instantiate (CallFacts :=
+                                    fun _ ctx prev_state _ _ =>
+                                        Some (auction_seller prev_state) <> (auction_highest_bidder prev_state) /\
+                                        ctx_from ctx <> ctx_contract_address ctx).
+                now unfold CallFacts in facts.
+              + now unfold sumZ_act.
+          }
+          {
+            assert (Some a <> Some bidder); first easy.
+            apply H0 in H2. unfold sumZ_call, call_from_list in H2. rewrite H2.
+            destruct msg; last easy. destruct m.
+            - repeat just_do_it receive_some. inversion receive_some. subst.
+              cbn. inversion Heqo. rewrite (address_eq_ne _ _ n). now unfold sumZ_act.
+            - repeat just_do_it receive_some. inversion receive_some. subst. cbn in *.
+              destruct (address_eqb_spec (auction_seller prev_state) (ctx_from ctx)).
+              + cbn. now unfold CallFacts in facts.
+              + now unfold sumZ_act.
+            - unfold receive in receive_some. do 2 just_do_it receive_some.
+              + destruct (address_eqb_spec (ctx_from ctx) (auction_seller prev_state)); try easy.
+                just_do_it receive_some.
+              + subst. unfold CallFacts in facts. repeat just_do_it receive_some.
+                inversion receive_some; subst; cbn in *. easy.
+          }
+        * assert (None <> Some bidder); first easy.
+          unfold receive in receive_some. do 2 just_do_it receive_some.
+          {
+            destruct (address_eqb_spec (ctx_from ctx) (auction_seller prev_state)); try just_do_it receive_some.
+            repeat just_do_it receive_some. inversion receive_some; subst; cbn in *.
+            apply H0 in H2; auto. unfold sumZ_call, call_from_list in H2. rewrite H2.
+            now unfold sumZ_act.
+          }
+          {
+            repeat just_do_it receive_some. inversion receive_some; subst; cbn in *; easy.
+          }
+      + destruct (auction_highest_bidder prev_state) eqn:?.
+        * unfold receive in receive_some.
+          do 2 just_do_it receive_some.
+          {
+            destruct (address_eqb_spec (ctx_from ctx) (auction_seller prev_state)); repeat just_do_it receive_some.
+            all: inversion receive_some; subst; cbn in *. now inversion H1.
+          }
+          {
+            repeat just_do_it receive_some.
+            unfold CallFacts in facts.
+            inversion receive_some; subst; cbn in *.
+            rewrite H1 in facts. destruct facts. assert (auction_seller prev_state <> bidder); first easy.
+            rewrite address_eq_ne; auto. rewrite Heqo in H1.
+            apply H0 in H1. unfold sumZ_call, call_from_list in H1. rewrite H1.
+            now unfold sumZ_act.
+          }
+        * unfold receive in receive_some.
+          repeat just_do_it receive_some; inversion receive_some; subst; cbn in *; easy.
+    - now unfold CallFacts in facts.
+    - now unfold CallFacts in facts.
+    - now unfold CallFacts in facts.
+    - now rewrite <- perm.
+    - apply H0 in H1; auto. rewrite H1. unfold sumZ_act. apply (Permutation_filter (fun act : ActionBody => is_act_transfer_to bidder act) _ _) in perm.
+      now rewrite <- perm.
+    - apply H0 in H1. rewrite H1. unfold sumZ_act. apply (Permutation_filter (fun act : ActionBody => is_act_transfer_to bidder act) _ _) in perm.
+      now rewrite <- perm.
+    - solve_facts.
+      split.
+      + pose proof (highest_bidder_not_seller bstate_from to_addr
+                      (trace_reachable from_reachable)
+                      deployed0).
+        now destruct H as (? & ? & ?).
+      + pose proof (no_self_calls bstate_from to_addr (trace_reachable from_reachable)
+          deployed0) as all.
+        destruct all as [? [? [? [? all]]]];
+        unfold outgoing_acts in *;
+        rewrite queue_prev in *;
+        cbn in all;
+        destruct_address_eq; cbn in *; auto;
+        inversion_clear all as [|? ? hd _];
+        destruct msg;
+        [contradiction
+        | rewrite address_eq_refl in hd;
+          congruence].
+  Qed.
+
+
+  (* TODO: correct this theorem *)
+  Theorem client_peace_of_mind bstate caddr bidder amount (trace : ChainTrace empty_state bstate) :
+    env_contracts bstate caddr = Some (Auction.contract : WeakContract) ->
+    exists cstate inc_calls,
+      incoming_calls Msg trace caddr = Some inc_calls /\
+      contract_state bstate caddr = Some cstate /\
+      (
+        cstate.(auction_highest_bidder) <> Some bidder -> (* exclude the current call *)
+
+        (exists origin tx_body, In (build_tx origin caddr bidder amount tx_body) (outgoing_txs trace caddr)) \/
+          In (act_transfer bidder amount)
+             (outgoing_acts bstate caddr)
+      ).
+  Proof with eauto.
+  Admitted.
+
 End Theories.
