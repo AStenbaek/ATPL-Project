@@ -160,10 +160,13 @@ Section Auction.
        | not_sold_yet => Ok tt
        | _ => Err default_error
        end;
-    (* TODO: How to deal with unsold item? *)
+    (* Ensure a highest bidder *)
     do bidder <- result_of_option (auction_highest_bidder state) default_error;
+    (* Lock contract with the winner and transfer to the seller *)
     let new_state := state<| auction_state := sold bidder |> in
-    Ok (new_state, [act_transfer (auction_seller state) (auction_current_price state)]).
+    Ok (new_state, [act_transfer
+                      (auction_seller state)
+                      (auction_current_price state)]).
   
   Definition receive
     (chain : Chain)
@@ -211,8 +214,8 @@ Section Theories.
                            end) (outgoing_acts bstate caddr)).
   Proof with auto.
     contract_induction;
-      intros; (try apply IH in H as H'); cbn in *; auto.
-    - repeat split.
+      intros; (try apply IH in H as H'); cbn in *...
+    - repeat split...
       + destruct result.
         unfold init in init_some.
         just_do_it init_some.
@@ -220,34 +223,18 @@ Section Theories.
         unfold DeployFacts in *.
         destruct setup0; destruct result; cbn in *.
         just_do_it init_some.
-      + auto.
     - destruct IH as [IH1 [IH2 IH3]]; split;
-      inversion IH3; auto...
+      inversion IH3...
     - destruct IH as [IH1 [IH2 IH3]]; split;
-      try apply Forall_app; try split.
-      + unfold receive in receive_some.
-        do 2 just_do_it receive_some...
-        * repeat just_do_it receive_some.
-          ** inversion receive_some; cbn in *.
-             intro.
-             inversion H; congruence.
-          ** inversion receive_some; cbn in *.
-             congruence.
-        * do 4 just_do_it receive_some.
-          inversion receive_some; cbn in *...
-      + unfold receive in receive_some; cbn in *.
-        do 2 just_do_it receive_some;
-        auto; repeat just_do_it receive_some; inversion receive_some...
-      + apply Forall_app; split...
-        unfold receive in receive_some.
-        do 2 just_do_it receive_some; try (inversion receive_some; auto; fail);
-        repeat just_do_it receive_some; inversion receive_some;
-        auto;
+        try apply Forall_app; try split;
+        unfold_receive receive_some;
+        destruct new_state;
+        repeat just_do_it receive_some;
+        inversion receive_some;
+        try intro; try easy;
         apply Forall_cons;
         auto;
-        apply address_eq_ne;
-        intro;
-        congruence.
+        now apply address_eq_ne.
     - destruct IH as [IH1 [IH2 IH3]];
         repeat split; 
         inversion IH3;
@@ -266,9 +253,7 @@ Section Theories.
         apply n...
       + now constructor.
   Qed.
-
-  Check ChainTrace.
-
+  
   Ltac solve_no_self_call_facts :=
     solve_facts;
     match goal with
